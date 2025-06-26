@@ -44,14 +44,6 @@ class WebSocketServer:
         default_context_cache = ServiceContext()
         default_context_cache.load_from_config(config)
 
-        # Include routes
-        self.app.include_router(
-            init_client_ws_route(default_context_cache=default_context_cache),
-        )
-        self.app.include_router(
-            init_webtool_routes(default_context_cache=default_context_cache),
-        )
-
         # Mount cache directory first (to ensure audio file access)
         if not os.path.exists("cache"):
             os.makedirs("cache")
@@ -83,6 +75,14 @@ class WebSocketServer:
             "/web-tool",
             CustomStaticFiles(directory="web_tool", html=True),
             name="web_tool",
+        )
+
+        # Include routes AFTER static file mounts but BEFORE frontend mount
+        self.app.include_router(
+            init_client_ws_route(default_context_cache=default_context_cache),
+        )
+        self.app.include_router(
+            init_webtool_routes(default_context_cache=default_context_cache),
         )
 
         # Mount main frontend last (as catch-all)

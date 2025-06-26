@@ -1,7 +1,9 @@
 import atexit
 import requests
+import json
 from loguru import logger
 from .openai_compatible_llm import AsyncLLM
+from typing import AsyncIterator, List, Dict, Any
 
 
 class OllamaLLM(AsyncLLM):
@@ -71,3 +73,63 @@ class OllamaLLM(AsyncLLM):
                 )
             )
             self.cleaned = True
+
+    async def chat_completion(
+        self, messages: List[Dict[str, Any]], system: str = None
+    ) -> AsyncIterator[str]:
+        """
+        用 requests 直连 Ollama 的 /v1/chat/completions，避免 openai-python SDK 兼容性问题
+        """
+        url = self.base_url
+        if not url.endswith("/chat/completions"):
+            if url.endswith("/v1"):
+                url = url + "/chat/completions"
+            else:
+                url = url.rstrip("/") + "/v1/chat/completions"
+        
+        logger.info(f"Ollama LLM: Requesting URL: {url}")
+        logger.info(f"Ollama LLM: Model: {self.model}")
+        logger.info(f"Ollama LLM: Messages: {messages}")
+        
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+        }
+        if system:
+            # Ollama 支持 system prompt，可以加到 messages 前面
+            payload["messages"] = [{"role": "system", "content": system}] + messages
+
+        # 支持流式
+        payload["stream"] = True
+
+        try:
+            with requests.post(url, headers=headers, data=json.dumps(payload), stream=True) as resp:
+                logger.info(f"Ollama LLM: Response status: {resp.status_code}")
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if line:
+                        text = line.decode("utf-8").strip()
+                        logger.debug(f"Ollama LLM: Raw line: {text}")
+                        if not text.startswith("data: "):
+                            continue
+                        content = text[len("data: "):]
+                        if content == "[DONE]":
+                            logger.info("Ollama LLM: Stream completed")
+                            break
+                        try:
+                            data = json.loads(content)
+                            if "choices" in data and data["choices"]:
+                                delta = data["choices"][0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    logger.debug(f"Ollama LLM: Yielding content: {content}")
+                                    yield content
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Ollama LLM: JSON decode error: {e}, content: {content}")
+                            # 跳过无效的 JSON 行
+                            continue
+        except Exception as e:
+            logger.error(f"Ollama LLM: Error in chat_completion: {e}")
+            raise
